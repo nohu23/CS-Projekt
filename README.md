@@ -1,7 +1,8 @@
-# 📚 AI-gestützter Lernplan Generator
+# @Team LESEN
 
 ## Nächste Schritte
 
+- Noah und Jonathan: Bitte eure Dokumente die nicht für den Code gebraucht werden aus der Sektion Code/Main Branch rausnehmen
 - Noah: Integration mit echten Lern-Daten (Spaced Repetition Systems) und Dokumente für CLuster erstellen
 - Oskar: Heatmap
 - Benni: Timer und Machine learning überarbeiten
