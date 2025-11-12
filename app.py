@@ -4,6 +4,7 @@ import numpy as np
 import pickle
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
+import time
 
 # Seiten-Konfiguration
 st.set_page_config(
@@ -34,16 +35,32 @@ if 'user_history' not in st.session_state:
         'days_since_last', 'previous_rating', 'actual_rating', 'feedback'
     ])
 
+# Timer State
+if 'timer_running' not in st.session_state:
+    st.session_state.timer_running = False
+if 'timer_start_time' not in st.session_state:
+    st.session_state.timer_start_time = None
+if 'current_block_index' not in st.session_state:
+    st.session_state.current_block_index = 0
+if 'timer_paused' not in st.session_state:
+    st.session_state.timer_paused = False
+if 'pause_time' not in st.session_state:
+    st.session_state.pause_time = 0
+if 'show_celebration' not in st.session_state:
+    st.session_state.show_celebration = False
+if 'remaining_at_pause' not in st.session_state:
+    st.session_state.remaining_at_pause = 0
+
 # Prüfen ob Modelle geladen wurden
 if st.session_state.models is None:
     st.stop()
 
 # Titel
-st.title("📚 AI-gestützter Lernplan Generator")
+st.title("AI-gestützter Lernplan Generator")
 st.markdown("Erstelle optimierte Lernpläne basierend auf deinem Lernverhalten und KI-Vorhersagen")
 
 # Sidebar für User-Input
-st.sidebar.header("🎯 Deine Lernsession planen")
+st.sidebar.header("Deine Lernsession planen")
 
 # Input: Gesamtdauer
 total_duration = st.sidebar.slider(
@@ -123,15 +140,37 @@ if st.sidebar.button("🚀 Lernplan generieren", type="primary"):
     features_scaled = models['scaler'].transform(features)
     
     # Vorhersagen
-    pred_blocks = int(round(models['work_blocks'].predict(features_scaled)[0]))
     pred_work = int(round(models['work_duration'].predict(features_scaled)[0]))
     pred_break = int(round(models['break_duration'].predict(features_scaled)[0]))
     pred_next = models['next_session'].predict(features_scaled)[0]
     
     # Sicherstellen dass Vorhersagen sinnvoll sind
-    pred_blocks = max(1, pred_blocks)
     pred_work = max(15, min(45, pred_work))
     pred_break = max(5, min(15, pred_break))
+    
+    # Anzahl Blöcke so berechnen dass Gesamtzeit passt
+    cycle_duration = pred_work + pred_break
+    pred_blocks = max(1, int((total_duration + pred_break) / cycle_duration))
+    
+    # Schedule erstellen
+    schedule = []
+    total_calculated = 0
+    
+    for block in range(pred_blocks):
+        schedule.append({
+            'type': 'Lernen',
+            'duration': pred_work,
+            'block': block + 1
+        })
+        total_calculated += pred_work
+        
+        if block < pred_blocks - 1:
+            schedule.append({
+                'type': 'Pause',
+                'duration': pred_break,
+                'block': block + 1
+            })
+            total_calculated += pred_break
     
     # In Session State speichern
     st.session_state.current_plan = {
@@ -140,100 +179,273 @@ if st.sidebar.button("🚀 Lernplan generieren", type="primary"):
         'break_duration': pred_break,
         'next_session_hours': pred_next,
         'total_duration': total_duration,
+        'actual_duration': total_calculated,
         'time_of_day': time_of_day,
-        'concentration': concentration
+        'concentration': concentration,
+        'schedule': schedule
     }
+    
+    # Timer zurücksetzen
+    st.session_state.timer_running = False
+    st.session_state.current_block_index = 0
+    st.session_state.timer_paused = False
+    st.session_state.pause_time = 0
+    st.session_state.show_celebration = False
 
 # Hauptbereich: Lernplan anzeigen
 if 'current_plan' in st.session_state:
     plan = st.session_state.current_plan
     
     # Metriken anzeigen
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        st.metric("🔢 Lernblöcke", f"{plan['blocks']}")
+        st.metric("Lernblöcke", f"{plan['blocks']}")
     
     with col2:
-        st.metric("⏱️ Lernblock-Dauer", f"{plan['work_duration']} min")
+        st.metric("Lernblock-Dauer", f"{plan['work_duration']} min")
     
     with col3:
-        st.metric("☕ Pausen-Dauer", f"{plan['break_duration']} min")
+        st.metric("Pausen-Dauer", f"{plan['break_duration']} min")
     
     with col4:
-        next_session_time = datetime.now() + timedelta(hours=plan['next_session_hours'])
-        st.metric("📅 Nächste Session", next_session_time.strftime("%H:%M Uhr"))
+        st.metric("Tatsächliche Dauer", f"{plan['actual_duration']} min")
+    
+    with col5:
+        st.metric("Nächste Session in", f"{plan['next_session_hours']:.1f} h")
+    
+    # TIMER BEREICH
+    st.markdown("---")
+    
+    # Celebration Animation
+    if st.session_state.show_celebration:
+        st.balloons()
+        st.success("🎉 Großartig! Block abgeschlossen!")
+        st.session_state.show_celebration = False
+    
+    schedule = plan['schedule']
+    current_idx = st.session_state.current_block_index
+    
+    if current_idx < len(schedule):
+        current_item = schedule[current_idx]
+        
+        # Timer-Header
+        st.subheader("Timer")
+        
+        # Fortschritt
+        progress = current_idx / len(schedule) if len(schedule) > 0 else 0
+        st.progress(progress, text=f"Block {current_idx + 1} von {len(schedule)}")
+        
+        # Aktueller Block Info
+        col_timer1, col_timer2 = st.columns([2, 1])
+        
+        with col_timer1:
+            if current_item['type'] == 'Lernen':
+                st.markdown(f"### Lernblock {current_item['block']}")
+                timer_color = "#4CAF50"
+            else:
+                st.markdown(f"### Pause nach Block {current_item['block']}")
+                timer_color = "#FF9800"
+        
+        # Timer berechnen
+        if st.session_state.timer_running and not st.session_state.timer_paused:
+            elapsed = (time.time() - st.session_state.timer_start_time) - st.session_state.pause_time
+            remaining_seconds = max(0, current_item['duration'] * 60 - elapsed)
+        elif st.session_state.timer_paused:
+            remaining_seconds = st.session_state.remaining_at_pause
+        else:
+            remaining_seconds = current_item['duration'] * 60
+        
+        minutes = int(remaining_seconds // 60)
+        seconds = int(remaining_seconds % 60)
+        
+        # Timer Display (simpel ohne Box)
+        with col_timer2:
+            st.markdown(
+                f"""
+                <div style='text-align: center;'>
+                    <h1 style='margin: 10px 0; font-size: 4em; color: {timer_color}; font-weight: bold;'>{minutes:02d}:{seconds:02d}</h1>
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+        
+        # Timer Kontrollen
+        col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
+        
+        with col_btn1:
+            if not st.session_state.timer_running:
+                if st.button("▶️ Start", use_container_width=True, key="start_btn"):
+                    st.session_state.timer_running = True
+                    st.session_state.timer_start_time = time.time()
+                    st.session_state.pause_time = 0
+                    st.session_state.timer_paused = False
+                    st.rerun()
+            else:
+                if not st.session_state.timer_paused:
+                    if st.button("⏸️ Pause", use_container_width=True, key="pause_btn"):
+                        st.session_state.timer_paused = True
+                        st.session_state.remaining_at_pause = remaining_seconds
+                        st.rerun()
+                else:
+                    if st.button("▶️ Weiter", use_container_width=True, key="continue_btn"):
+                        st.session_state.timer_paused = False
+                        elapsed_pause = time.time() - st.session_state.timer_start_time
+                        st.session_state.pause_time = elapsed_pause - (current_item['duration'] * 60 - st.session_state.remaining_at_pause)
+                        st.session_state.timer_start_time = time.time() - (current_item['duration'] * 60 - st.session_state.remaining_at_pause)
+                        st.rerun()
+        
+        with col_btn2:
+            if st.button("⏭️ Skip", use_container_width=True, key="skip_btn"):
+                st.session_state.show_celebration = True
+                st.session_state.current_block_index += 1
+                st.session_state.timer_running = False
+                st.session_state.timer_paused = False
+                st.session_state.pause_time = 0
+                st.rerun()
+        
+        with col_btn3:
+            if st.button("🔄 Reset", use_container_width=True, key="reset_btn"):
+                st.session_state.timer_running = False
+                st.session_state.timer_start_time = None
+                st.session_state.timer_paused = False
+                st.session_state.pause_time = 0
+                st.rerun()
+        
+        with col_btn4:
+            if st.button("⏹️ Beenden", use_container_width=True, key="stop_btn"):
+                st.session_state.current_block_index = 0
+                st.session_state.timer_running = False
+                st.session_state.timer_paused = False
+                st.rerun()
+        
+        # Hinweis wenn Timer abgelaufen
+        if remaining_seconds <= 0 and st.session_state.timer_running:
+            st.warning("⏰ Zeit abgelaufen! Klicke auf 'Weiter zum nächsten Block'")
+            
+            # Button für nächsten Block
+            if st.button("➡️ Weiter zum nächsten Block", use_container_width=True, type="primary", key="next_block_btn"):
+                st.session_state.show_celebration = True
+                st.session_state.current_block_index += 1
+                st.session_state.timer_running = False
+                st.session_state.timer_paused = False
+                st.session_state.pause_time = 0
+                st.rerun()
+        
+        # Refresh-Button für manuelles Update
+        st.markdown("")  # Spacer
+        col_refresh1, col_refresh2, col_refresh3 = st.columns([1, 2, 1])
+        with col_refresh2:
+            if st.session_state.timer_running and not st.session_state.timer_paused:
+                if st.button("🔄 Timer aktualisieren", use_container_width=True, key="refresh_btn"):
+                    st.rerun()
+    
+    else:
+        st.success("🎊 Glückwunsch! Du hast alle Lernblöcke abgeschlossen!")
+        st.balloons()
+        if st.button("🔄 Neue Session starten", key="new_session_btn"):
+            st.session_state.current_block_index = 0
+            st.session_state.timer_running = False
+            st.session_state.timer_paused = False
+            st.rerun()
+    
+    st.markdown("---")
     
     # Zeitplan visualisieren
-    st.subheader("📊 Dein Lernplan im Detail")
-    
-    # Zeitstrahl erstellen
-    current_time = datetime.now()
-    schedule = []
-    
-    for block in range(plan['blocks']):
-        # Lernblock
-        schedule.append({
-            'type': 'Lernen',
-            'start': current_time,
-            'duration': plan['work_duration'],
-            'block': block + 1
-        })
-        current_time += timedelta(minutes=plan['work_duration'])
-        
-        # Pause (nicht nach dem letzten Block)
-        if block < plan['blocks'] - 1:
-            schedule.append({
-                'type': 'Pause',
-                'start': current_time,
-                'duration': plan['break_duration'],
-                'block': block + 1
-            })
-            current_time += timedelta(minutes=plan['break_duration'])
+    st.subheader("Dein Lernplan im Detail")
     
     # Zeitplan-Tabelle
-    schedule_df = pd.DataFrame([
-        {
-            'Nr.': i + 1,
-            'Aktivität': item['type'],
-            'Start': item['start'].strftime('%H:%M'),
-            'Ende': (item['start'] + timedelta(minutes=item['duration'])).strftime('%H:%M'),
-            'Dauer': f"{item['duration']} min"
-        }
-        for i, item in enumerate(schedule)
-    ])
-    
-    st.dataframe(schedule_df, use_container_width=True, hide_index=True)
-    
-    # Gantt-Chart
-    fig = go.Figure()
+    schedule_display = []
     
     for i, item in enumerate(schedule):
-        color = '#4CAF50' if item['type'] == 'Lernen' else '#FF9800'
+        status = "✅" if i < current_idx else ("🔄" if i == current_idx else "⏳")
+        schedule_display.append({
+            'Nr.': i + 1,
+            'Status': status,
+            'Aktivität': item['type'],
+            'Dauer': f"{item['duration']} min"
+        })
+    
+    st.dataframe(
+        pd.DataFrame(schedule_display), 
+        use_container_width=True, 
+        hide_index=True
+    )
+    
+    # Gantt-Chart (verbesserte Darstellung ohne Stern)
+    fig = go.Figure()
+    
+    # Sammle alle Lernblöcke und Pausen
+    work_blocks_x = []
+    work_blocks_y = []
+    pause_blocks_x = []
+    pause_blocks_y = []
+    
+    for i, item in enumerate(schedule):
+        if item['type'] == 'Lernen':
+            work_blocks_x.append(item['duration'])
+            work_blocks_y.append(len(schedule) - i - 1)  # Umgedrehte Y-Achse
+        else:
+            pause_blocks_x.append(item['duration'])
+            pause_blocks_y.append(len(schedule) - i - 1)
+    
+    # Lernblöcke hinzufügen
+    if work_blocks_x:
         fig.add_trace(go.Bar(
-            name=item['type'],
-            x=[item['duration']],
-            y=[i],
+            name='Lernen',
+            x=work_blocks_x,
+            y=work_blocks_y,
             orientation='h',
-            marker=dict(color=color),
-            text=f"{item['type']}: {item['duration']} min",
+            marker=dict(color='#4CAF50'),
+            text=[f"Lernen {x} min" for x in work_blocks_x],
             textposition='inside',
-            showlegend=i == 0 or (i == 1 and item['type'] == 'Pause')
+            hovertemplate='Lernen: %{x} min<extra></extra>'
+        ))
+    
+    # Pausen hinzufügen
+    if pause_blocks_x:
+        fig.add_trace(go.Bar(
+            name='Pause',
+            x=pause_blocks_x,
+            y=pause_blocks_y,
+            orientation='h',
+            marker=dict(color='#FF9800'),
+            text=[f"Pause {x} min" for x in pause_blocks_x],
+            textposition='inside',
+            hovertemplate='Pause: %{x} min<extra></extra>'
         ))
     
     fig.update_layout(
         title="Zeitlicher Ablauf deiner Lernsession",
         xaxis_title="Dauer (Minuten)",
         yaxis_title="",
-        barmode='stack',
-        height=400,
-        yaxis=dict(showticklabels=False)
+        barmode='overlay',
+        height=max(300, len(schedule) * 40),
+        yaxis=dict(
+            showticklabels=False,
+            range=[-0.5, len(schedule) - 0.5]
+        ),
+        xaxis=dict(range=[0, max([item['duration'] for item in schedule]) * 1.1]),
+        hovermode='closest',
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
     )
     
     st.plotly_chart(fig, use_container_width=True)
     
+    # Info über Zeitabweichung
+    time_diff = abs(plan['total_duration'] - plan['actual_duration'])
+    if time_diff > 5:
+        st.info(f"ℹ️ Die tatsächliche Session-Dauer ({plan['actual_duration']} min) weicht von deiner Wunschdauer ({plan['total_duration']} min) ab. Das liegt an der Optimierung der Lernblock-Längen für maximale Effizienz.")
+    
     # Tipps basierend auf Vorhersagen
-    st.subheader("💡 Personalisierte Tipps")
+    st.subheader("Personalisierte Tipps")
     
     tips = []
     if plan['concentration'] < 5:
@@ -252,7 +464,7 @@ if 'current_plan' in st.session_state:
         st.success("✅ Dein Lernplan sieht optimal aus! Viel Erfolg!")
     
     # Feedback nach der Session
-    st.subheader("📝 Session-Feedback")
+    st.subheader("Session-Feedback")
     st.markdown("*Nach deiner Lernsession kannst du Feedback geben, um die KI zu verbessern:*")
     
     with st.form("feedback_form"):
@@ -281,7 +493,6 @@ if 'current_plan' in st.session_state:
         submitted = st.form_submit_button("💾 Feedback speichern")
         
         if submitted:
-            # Feedback zur History hinzufügen
             new_entry = pd.DataFrame([{
                 'timestamp': datetime.now(),
                 'total_duration': plan['total_duration'],
@@ -302,34 +513,35 @@ if 'current_plan' in st.session_state:
 
 else:
     # Willkommensbildschirm
-    st.info("👈 Nutze die Sidebar, um deinen personalisierten Lernplan zu erstellen!")
+    st.info("Nutze die Sidebar, um deinen personalisierten Lernplan zu erstellen!")
     
     st.markdown("""
-    ### 🎯 So funktioniert's:
+    ### So funktioniert's:
     
     1. **Gib deine Parameter ein** (Dauer, Tageszeit, Konzentration)
     2. **Klicke auf "Lernplan generieren"**
-    3. **Erhalte deinen optimierten Zeitplan** mit KI-Empfehlungen
+    3. **Nutze den interaktiven Timer** mit Countdown und Animationen
     4. **Gib nach der Session Feedback** um die KI zu trainieren
     
-    ### 🧠 Was macht die KI?
+    ### Was macht die KI?
     
     Die Ridge Regression analysiert:
-    - ✅ Deine Konzentrationsfähigkeit
-    - ✅ Die Tageszeit (Chronobiologie)
-    - ✅ Dein bisheriges Lernverhalten
-    - ✅ Erholungszeiten zwischen Sessions
+    - Deine Konzentrationsfähigkeit
+    - Die Tageszeit (Chronobiologie)
+    - Dein bisheriges Lernverhalten
+    - Erholungszeiten zwischen Sessions
     
     Und empfiehlt dir:
-    - 📊 Optimale Anzahl und Länge der Lernblöcke
-    - ☕ Passende Pausenzeiten
-    - 📅 Den besten Zeitpunkt für die nächste Session
+    - Optimale Anzahl und Länge der Lernblöcke
+    - Passende Pausenzeiten
+    - Den besten Zeitpunkt für die nächste Session
+    - Interaktiver Timer mit Fortschrittsanzeige
     """)
 
 # Footer mit Stats
 if len(st.session_state.user_history) > 0:
     st.sidebar.markdown("---")
-    st.sidebar.subheader("📈 Deine Statistiken")
+    st.sidebar.subheader("Deine Statistiken")
     st.sidebar.metric("Absolvierte Sessions", len(st.session_state.user_history))
     avg_rating = st.session_state.user_history['actual_rating'].mean()
     st.sidebar.metric("Durchschnittliches Rating", f"{avg_rating:.1f}/10")
