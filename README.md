@@ -8,6 +8,11 @@
 - Benni: Timer und Machine learning überarbeiten
 - Noah und Jonathan: CLuster in Machine learning einbauen
 
+## Um die App zu starten
+geben im Terminal ein
+1. pip install -r requirements.txt
+2. streamlit run app.py
+
 
 
 Ein intelligenter Lernplan-Generator, der mit **Ridge Regression** und **CLustering** personalisierte Lernpläne erstellt basierend auf Konzentrationsfähigkeit, Tageszeit und individuellem Lernverhalten.
